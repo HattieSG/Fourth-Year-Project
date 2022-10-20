@@ -1,82 +1,64 @@
 # -*- coding: utf-8 -*-
 """
-Created on Thu Apr  7 15:32:38 2022
+Created on Thu Apr  7 16:25:49 2022
 
 @author: Hattie
 """
 
 import os
+import random
 import scipy.io
 import time
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import tensorflow as tf
 
-from imblearn.under_sampling import NearMiss, RandomUnderSampler, EditedNearestNeighbours
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, roc_curve, auc
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder, label_binarize
-from sklearn.svm import SVC
+from sklearn.metrics import classification_report, roc_curve, auc
+from sklearn.preprocessing import label_binarize
 from tensorflow.keras import layers, models
 
 
-def extract_emg_features(emg, repetition, step, N):
-    """
-    Function to split emg data into windows and extract feature for each
-    channel in the window
 
-    Parameters
-    ----------
-    emg : numpy.ndarray
-        An array of emg data.
-    repetition : numpy.ndarray
-        An array of labels for each row of emg data.
-    step : int
-        The size of the step between windows.
-    N : int
-        The size of the window.
-
-    Returns
-    -------
-    window_features : list
-        A list of lists of features for each emg window.
-
-    """
-
-    # Create a list to store features for each window
-    window_features = []
+def extract_windows(emg_data, stimulus, N, steps):
+    """Function to transform a table of emg signals into a list labelled windows
     
-    # Iterate over the emg data in windows of 100
-    for i in range(0, len(emg), step):
-        # Get the current window of emg and repetition data
-        temp_emg = emg[i:i+N]
-        temp_repetition = repetition[i:i+N]
+    :param emg_data: An array of emg values where each row is reading and each
+                     column is a channel
+    :type emg_data: numpy.ndarray
+    
+    :param N: The number of data point to include
+    :type N: int
+    
+    :param steps: The step size between each window
+    :type steps: int
+    
+    :return: A list of 3d matrices of emg data and a list of labels
+    :rtype: list, list
+    """
+    # Crete a list to store reshaped emg data images
+    output = []
+    labels = []
+    # Iterate over the emg signal in steps of 100
+    for i in range(0, len(emg_data), steps):
+        # Get 500 rows of the emg data and labels
+        temp = emg_data[i:i+N]
+        temp_stimulus = stimulus[i:i+N]
         # If there is a crossover between labels skip feature extraction
-        if len(np.unique(temp_repetition)) > 1:
+        if len(np.unique(temp_stimulus)) > 1:
             continue
-        # Create a list to store the features for each channel
-        features = []
-        # Iterate over each channel of the current window
-        for j in range(0, temp_emg.shape[1]):
-            # Append the mean and standard deviation of each channel to the 
-            # list of features
-            features.append(np.mean(temp_emg[:,j]))
-            features.append(np.median(temp_emg[:,j]))
-            features.append(np.std(temp_emg[:,j]))
-            features.append(np.var(temp_emg[:,j]))
-            features.append(np.min(temp_emg[:,j]))
-            features.append(np.max(temp_emg[:,j]))
-            
-        # Append the unique repetition values to the list of features
-        features.append(int(np.unique(temp_repetition)))
-        # Append the list of features for one window to the list for all windows
-        window_features.append(features)
-        
-    return window_features
+        try:
+            if(len(temp) != 500):
+                continue
+            output.append(temp)
+            # Get the single label value that applies to the window and append
+            labels.append(int(np.unique(temp_stimulus)))
+        except ValueError:
+            continue
+        except TypeError:
+            continue
+    return output, labels
 
 
 
@@ -102,6 +84,38 @@ def increment_labels(stimulus, increment):
     inc_array = np.array(inc_list, 'int8').reshape(len(inc_list), 1)
     
     return inc_array
+
+
+
+def random_undersample(temp_X, temp_y, amount, val):
+    """Functions to remove a number of random values from a dataset
+    :param temp_X: A list of data values that correspond to labels
+    :type temp_Y: list
+    
+    :param temp_y: A list of data labels that correspond
+    :type temp_y: list
+    
+    :param amount: The amount of data point to be removed
+    :type amount: int
+    
+    :param val: The label value to be undersampled
+    :type val: int
+    
+    :return: Two resampled lists of data and labels
+    :rtype: list, list
+    """
+    # Get indexes of all labels with desired value
+    indexes = list(np.where(np.array(temp_y) == val)[0])
+    
+    # Get a list of indexes to remove from the dataset
+    remove = random.sample(indexes, k=amount)	
+    
+    # Remove the specified indexes from both lists
+    for i in sorted(remove, reverse=True):
+        del(temp_X[i])
+        del(temp_y[i])
+    
+    return temp_X, temp_y
 
 
 
@@ -178,17 +192,19 @@ def multiclass_roc(true_labs, pred_b, n_classes, title):
     # Add the title to the plot
     plt.title(title)
     plt.show()
-
-
-
+    
+    
+    
 if __name__ == "__main__":
     print("Hello world")
+    
     # List all files in current directory
     files = os.listdir('data/')
     
-    extracted_features = []
+    # Create empty list to store files and names
+    modified_files = []
     start = time.time()
-    # Iterate over all of the files
+    # Iterate through each file in the list of files
     for file in files:
         print(f"Processing {file}...")
         # If it is a .mat data file read and process it
@@ -209,37 +225,49 @@ if __name__ == "__main__":
             elif e_val == "E3":
                 continue
                 new_stimulus= increment_labels(mat['stimulus'], 29)
-                
-            # Extract the emg data and repetition data
-            extracted_features.append(extract_emg_features(mat['emg'], new_stimulus, 100, 500))
+            
+            images, labels = extract_windows(mat['emg'], new_stimulus, 500, 250) 
+            
+            modified_files.append([file, images, labels])
     
-    # Flatten the features for each file into a single list
-    all_features = [item for sublist in extracted_features for item in sublist] 
+    # Create lists to store all the images and all the labels
+    X = []
+    y = []
     
-    print(f"Feature extraction time: {time.time()-start}")
+    # Iterate through the modified files and extend the image and label lists
+    for file in modified_files:
+        print(f"Concatentating file {file[0]}")
+        X.extend(file[1])
+        y.extend(file[2])
     
-    # Create dataframe of emg features
-    df = pd.DataFrame(all_features)
-    
-    
-    # Standardise the features
-    start = time.time()
-    X = StandardScaler().fit_transform(df.iloc[:,:-1].values)
-    print(f"Standardization time: {time.time()-start}")
-    
-    # # Normalize the features
-    # start = time.time()
-    # X = MinMaxScaler().fit_transform(df.iloc[:,:-1].values)
-    # print(f"Normalization time: {time.time()-start}")
-    
-    # Encode the labels
-    y = LabelEncoder().fit_transform(df.iloc[:,-1].values)
-    
+    print(f"Windowing time: {time.time()-start}")
+        
     # Create bar plot showing the frequency of the different labels
     xlabs, counts = np.unique(y, return_counts=True)
     bars = plt.bar(xlabs, counts, align='center')
     # Add x labels every 5 bars
-    plt.gca().set_xticks(np.arange(0, 53, 5))
+    plt.gca().set_xticks(np.arange(0, 13, 5))
+    # Add a label to the bar every 5th bar
+    ctr = 0
+    for bar in bars:
+        if ctr % 5 == 0:
+            yval = bar.get_height()
+            plt.text(bar.get_x(), yval + 150, yval)
+        ctr+=1
+    # Show the plot
+    plt.show()
+
+    amount = int(input("How many?!: "))
+    start = time.time()
+    # Call function to under sample the data
+    X2, y2 = random_undersample(X.copy(), y.copy(), amount, 0)
+    print(f"Undersampling time: {time.time()-start}")
+    
+    # Create bar plot showing the frequency of the different labels
+    xlabs, counts = np.unique(y2, return_counts=True)
+    bars = plt.bar(xlabs, counts, align='center')
+    # Add x labels every 5 bars
+    plt.gca().set_xticks(np.arange(0, 13, 5))
     # Add a label to the bar every 5th bar
     ctr = 0
     for bar in bars:
@@ -249,115 +277,37 @@ if __name__ == "__main__":
         ctr+=1
     # Show the plot
     plt.show()
-    
-    start = time.time()
-    # # define the undersampling method
-    # undersample = NearMiss(version=1, n_neighbors=3)
-    # # transform the dataset
-    # X2, y2 = undersample.fit_resample(X, y)
-    
-    # # define the undersampling method
-    # undersample = RandomUnderSampler(random_state=42)
-    # # transform the dataset
-    # X2, y2 = undersample.fit_resample(X, y)
-    
-    # define the undersampling method
-    undersample = EditedNearestNeighbours()
-    # transform the dataset
-    X2, y2 = undersample.fit_resample(X, y)
-    print(f"Undersampling time: {time.time()-start}")
-    
-    
-    # Create bar plot showing the frequency of the different labels
-    xlabs, counts = np.unique(y2, return_counts=True)
-    bars = plt.bar(xlabs, counts, align='center')
-    # Add x labels every 5 bars
-    plt.gca().set_xticks(np.arange(0, 53, 5))
-    # Add a label to the bar every 5th bar
-    ctr = 0
-    for bar in bars:
-        if ctr % 5 == 0:
-            yval = bar.get_height()
-            plt.text(bar.get_x(), yval + 0.5, yval)
-        ctr+=1
-    # Show the plot
-    plt.show()
+
+    print(f"Pre undersampled: {len(X)}")
+    print(f"Post undersampled: {len(X2)}")
     
     # Split the data 70/20/10
     X_train, X_test, y_train, y_test = train_test_split(X2, y2, test_size=0.3, random_state=42)
     X_test, X_val, y_test, y_val = train_test_split(X_test, y_test, test_size=0.33, random_state=42)
     
-    
-    # Train and predict logisitic regression
-    start = time.time()
-    clf = LogisticRegression(random_state=0, max_iter=10000).fit(X_train, y_train)
-    print(f"LR training time: {time.time()-start}")
-    start = time.time()
-    predictions = clf.predict(X_test)
-    print(f"LR inference time: {(time.time()-start)/len(y_test)}")
-    print("Logistic Regression")
-    print(classification_report(y_test,predictions))
-    probas = clf.predict_proba(X_test)
-    multiclass_roc(y_test, probas, 13, "LR ROC Curve")
-    
-    # Train and predict a SVM
-    start = time.time()
-    clf = SVC(gamma='auto').fit(X_train, y_train)
-    print(f"SVM training time: {time.time()-start}")
-    start = time.time()
-    predictions = clf.predict(X_test)
-    print(f"SVM inference time: {(time.time()-start)/len(y_test)}")
-    print("SVM")
-    print(classification_report(y_test,predictions))
-    probas = label_binarize(predictions, classes=range(0, 13))
-    multiclass_roc(y_test, probas, 13, "SVM ROC Curve")
-    
-    # Train and predict a random forest
-    start=time.time()
-    clf = RandomForestClassifier(max_depth=2, random_state=0).fit(X_train, y_train)
-    print(f"RF training time: {time.time()-start}")
-    start = time.time()
-    predictions = clf.predict(X_test)
-    print(f"RF inference time: {(time.time()-start)/len(y_test)}")
-    print("Random Forest")
-    print(classification_report(y_test,predictions))
-    probas = clf.predict_proba(X_test)
-    multiclass_roc(y_test, probas, 13, "RF ROC Curve")
-    
-    # Define convolutional neural network architecture
+    # Define LSTM neural network architecture
     model = models.Sequential()
-    # Add fully connected layer
-    model.add(layers.Dense(1000, activation='relu', input_shape = (72,)))
-    # Add dropout layer drop 20% of connections to prevent overfitting
-    model.add(layers.Dropout(0.2))
-    # Add a fully connected layer
-    model.add(layers.Dense(750, activation='relu'))
-    # Add dropout layer drop 20% of connections to prevent overfitting
-    model.add(layers.Dropout(0.2))
-    # Add a fully connected layer
-    model.add(layers.Dense(500, activation='relu'))
-    
-    
-    # Add a fully connected layer for classification
+    model.add(layers.LSTM(128, return_sequences=True, input_shape=(500, 12)))
+    model.add(layers.LSTM(64))
     model.add(layers.Dense(13, activation='softmax'))
-    
     model.compile(optimizer='adam',
                   loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
                   metrics=['accuracy'])
     model.summary()
+    
     start = time.time()
     history = model.fit(np.array(X_train),
                         np.array(y_train),
-                        epochs=50, 
+                        epochs=60, 
                         validation_data=(np.array(X_val), 
                                           np.array(y_val)),)
-    print(f"FFNN training time: {time.time()-start}")
     
+    print(f"FFNN training time: {time.time()-start}")
     start = time.time()
-    predictions = model.predict(X_test) 
-    print(f"FFNN inference time: {(time.time()-start)/len(y_test)}")
+    predictions = model.predict(np.array(X_test)) 
+    print(f"LSTM inference time: {(time.time()-start)/len(y_test)}")
     print(classification_report(y_test,np.argmax(predictions, axis=1)))
-    multiclass_roc(y_test, predictions, 13, "FFNN ROC Curve")
+    multiclass_roc(y_test, predictions, 13, "LSTM ROC Curve")
     
     plt.plot(history.history['loss'])
     plt.plot(history.history['val_loss'])
@@ -368,3 +318,37 @@ if __name__ == "__main__":
     plt.show()
     
     
+    # Define LSTM architecture with autoencoding
+    model = models.Sequential()
+    model.add(layers.LSTM(500, input_shape=(500,12), return_sequences=True))
+    model.add(layers.LSTM(64, return_sequences=False))
+    model.add(layers.RepeatVector(500))
+    model.add(layers.LSTM(64, return_sequences=True))
+    model.add(layers.LSTM(500))
+    model.add(layers.Dense(13, activation='softmax'))
+    model.compile(optimizer='adam',
+                  loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+                  metrics=['accuracy'])
+    model.summary()
+    
+    start = time.time()
+    history = model.fit(np.array(X_train),
+                        np.array(y_train),
+                        epochs=60, 
+                        validation_data=(np.array(X_val), 
+                                          np.array(y_val)),)
+    
+    print(f"Autoencoder LSTM training time: {time.time()-start}")
+    start = time.time()
+    predictions = model.predict(np.array(X_test))
+    print(f"Autoencoder LSTM inference time: {(time.time()-start)/len(y_test)}")
+    print(classification_report(y_test,np.argmax(predictions, axis=1)))
+    multiclass_roc(y_test, predictions, 13, "Autoencoder LSTM ROC Curve")
+    
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title('Model Loss')
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'val'], loc='upper right')
+    plt.show()
